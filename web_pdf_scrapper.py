@@ -15,39 +15,6 @@ def ocr_page(page):
     text = pytesseract.image_to_string(img, lang="eng")
     return text
 
-def process_pdf(pdf_path):
-    print(f"\n--- Reading PDF: {pdf_path.name} ---")
-    pages = convert_from_path(pdf_path, dpi=150)
-    
-    # List to store the data before saving to Excel
-    extracted_data = []
-
-    for i, page in enumerate(pages): 
-        print(f"Processing page {i + 1}...")
-        text = ocr_page(page)
-        para = re.split(r'\n\s*\n', text)
-
-        #data frame
-        for p in para: 
-            extracted_data.append({
-                "page":i+1,
-                "sentencess":p
-            })
-        
-     
-    # Save the extracted data to an Excel file
-    if extracted_data:
-        df = pd.DataFrame(extracted_data)
-        
-        # Change the file extension from .pdf to .xlsx
-        excel_path = pdf_path.with_suffix('.xlsx') 
-        
-        # Write to Excel
-        df.to_excel(excel_path, index=False)
-        print(f"SUCCESS: Saved extracted text to {excel_path.name}")
-    else:
-        print(f"WARNING: No text could be extracted from {pdf_path.name}")
-
 def get_title_from_pdf(pdf_path):
     print(f"Peeking into {pdf_path.name} to find a document number...")
     
@@ -59,13 +26,11 @@ def get_title_from_pdf(pdf_path):
             
             # --- THE EXPANDED MULTI-HUNTER LIST ---
             doc_types = [
-                "AB"
                 "Anticipatory Bail",
                 "PIL",
                 "CRIL. PETITION",
                 "Writ Appeal",
                 "Bail Application",
-                # Leaving the others here just in case you need them!
                 "Civil Appeal",
                 "Criminal Appeal",
                 "Review Petition",
@@ -74,7 +39,7 @@ def get_title_from_pdf(pdf_path):
             
             for doc_type in doc_types:
                 
-                # --- NEW FLEXIBLE CLEANUP ---
+                # --- FLEXIBLE CLEANUP ---
                 # 1. We make periods optional to survive "CRIL." vs "CRIL"
                 # 2. We make spaces flexible to survive weird OCR spacing
                 flex_type = doc_type.replace(".", r"[\.\s]*").replace(" ", r"\s*")
@@ -101,7 +66,65 @@ def get_title_from_pdf(pdf_path):
     except Exception as e:
         print(f"Could not read title from {pdf_path.name}: {e}")
         
-    return None
+    return None 
+
+def process_pdf(pdf_path, base_excel_name):
+    print(f"\n--- Reading PDF: {pdf_path.name} ---")
+    pages = convert_from_path(pdf_path, dpi=150)
+    
+    # We will store the columns separately
+    page_numbers = []
+    paragraphs = []
+    
+    full_document_text = "" # We'll use this to check for the disclaimer
+
+    for i, page in enumerate(pages): 
+        print(f"Processing page {i + 1}...")
+        text = ocr_page(page)
+        full_document_text += text # Add to our giant string for checking
+        
+        para = re.split(r'\n\s*\n', text)
+
+        for p in para: 
+            # Only add if the paragraph isn't just empty space
+            if p.strip():
+                page_numbers.append(i + 1)
+                paragraphs.append(p.strip())
+                
+    # --- THE DETECTIVE ---
+    # Check if this is the translated version by looking for the keyword
+    if "DISCLAIMER: Manipuri" in full_document_text or "translated in Vernacular" in full_document_text:
+        print("-> Detected Vernacular/Translated Version")
+        prefix = "Manipuri_"
+    else:
+        print("-> Detected Standard English Version")
+        prefix = "English_"
+
+    # Create a DataFrame for THIS specific PDF
+    new_data = {
+        f"{prefix}Page": page_numbers,
+        f"{prefix}Text": paragraphs
+    }
+    new_df = pd.DataFrame(new_data)
+    
+    # --- THE PANDAS MERGE ---
+    # The Excel file will be named exactly after the base case name
+    excel_path = pdf_path.parent / f"{base_excel_name}.xlsx"
+    
+    if excel_path.exists():
+        # If the Excel file already exists, open it up
+        print(f"Opening existing Excel file: {excel_path.name} to merge data...")
+        existing_df = pd.read_excel(excel_path)
+        
+        # pd.concat with axis=1 sticks the new columns side-by-side with the old ones.
+        final_df = pd.concat([existing_df, new_df], axis=1)
+        final_df.to_excel(excel_path, index=False)
+        print(f"SUCCESS: Merged into {excel_path.name}")
+    else:
+        # If this is the first PDF we've processed for this case, just save it normally
+        new_df.to_excel(excel_path, index=False)
+        print(f"SUCCESS: Created new Excel file {excel_path.name}")
+
 def scrape_and_process_pdfs(url):
     print(f"Fetching webpage: {url}")
     try:
@@ -138,7 +161,7 @@ def scrape_and_process_pdfs(url):
             
             filename = pdf_url.split('/')[-1]
             if not filename.lower().endswith('.pdf'):
-                filename = f"document_{hash(pdf_url)}.pdf"# hash() this turns the url into a unique string od no 
+                filename = f"document_{hash(pdf_url)}.pdf" 
             
             file_path = download_dir / filename
             
@@ -146,29 +169,29 @@ def scrape_and_process_pdfs(url):
                 for chunk in pdf_response.iter_content(chunk_size=8192):
                     f.write(chunk)
             
-            # --- NEW RENAMING & COLLISION LOGIC ---
+            # --- RENAMING & COLLISION LOGIC ---
             new_title = get_title_from_pdf(file_path)
             
             if new_title:
-                # Start with the base assumption (e.g., "[Writ Appeal No. 91 of 2023].pdf")
+                # Save the BASE name before appending collision numbers
+                base_excel_name = new_title 
+                
                 new_file_path = file_path.with_name(f"{new_title}.pdf")
                 counter = 1
                 
-                # The Collision Handler: As long as a file with this name ALREADY EXISTS,
-                # keep adding 1 to the counter and trying again.
                 while new_file_path.exists():
                     counter += 1
-                    # Try a new name: "[Writ Appeal No. 91 of 2023]2.pdf"
                     new_file_path = file_path.with_name(f"{new_title}{counter}.pdf")
                 
-                # Once the while loop finishes, we know we have a completely unique name.
                 file_path.rename(new_file_path)
                 file_path = new_file_path
                 print(f"SUCCESS: Renamed file to: {file_path.name}")
-            # --------------------------------------
-
-            # Process the PDF and generate the Excel file
-            process_pdf(file_path)
+                
+                process_pdf(file_path, base_excel_name)
+                
+            else:
+                # Fallback if no legal title is found
+                process_pdf(file_path, file_path.stem)
             
         except Exception as e:
             print(f"Failed to download or process {pdf_url}: {e}")
@@ -190,7 +213,11 @@ def main():
         if not pdf_path.exists() or pdf_path.suffix.lower() != ".pdf":
             print("INVALID: Pdf file does not exist or is not a .pdf")
         else:
-            process_pdf(pdf_path)
+            # Try to get the title for the local file too
+            base_name = get_title_from_pdf(pdf_path)
+            if not base_name:
+                base_name = pdf_path.stem
+            process_pdf(pdf_path, base_name)
             
     elif choice == '2':
         url = input("Enter the URL to scrape: ")
