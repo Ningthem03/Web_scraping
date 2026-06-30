@@ -81,27 +81,23 @@ class LegalDocumentScraper:
 
 
     def get_title_from_text(self, text):
-        """Extracts all case citations and returns a sanitized filename string."""
-        results = []
-    
-        # Build one big regex pattern from all doc types
-        doc_types_pattern = "|".join([
-            dt.replace(".", r"[\.\s]*").replace(" ", r"\s*") for dt in self.doc_types
-        ])
-    
-        # Match: CaseType + optional (Civil/Criminal) + No. + number + year
-        pattern = fr'({doc_types_pattern})(?:\s*\(?[A-Za-z\. ]*\)?)?(?:\s*NO\.?)?\s*(\d+)\s*(?:OF|/|-)?\s*(\d{{4}})'
-                                           # (?:\(?Civil\?)?(?:\s*NO\.?)?\s*(\d+)\s*(?:OF|/|-)?\s*(\d{{4}})
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            doc_type = re.sub(r'\s+', ' ', match.group(1)).strip()
-            case_num = match.group(2)
-            case_year = match.group(3)
-            results.append(f"{doc_type.upper()}_NO_{case_num}_OF_{case_year}")
-    
-        if results:
-            # Join multiple matches safely for filenames
-            return "__".join(results)
-        return None
+        """Hunts for standard case formats and perfectly reconstructs a sanitized filename."""
+        for doc_type in self.doc_types:
+            # Flexible Cleanup (handles "CRIL." vs "CRIL " and bad spacing)
+            flex_type = doc_type.replace(".", r"[\.\s]*").replace(" ", r"\s*")
+            
+            # UPGRADED PATTERN: Makes "No." and "Of" completely optional to catch "27/2023"
+            pattern = fr'{flex_type}(?:\(?Civil\?)?(?:\s*NO\.?)?\s*(\d+)\s*(?:OF|/|-)?\s*(\d{{4}})'
+            
+            match = re.search(pattern, text, re.IGNORECASE)
+            
+            if match:
+                # Perfectly reconstruct the title to guarantee identical file names
+                case_num = match.group(1)
+                case_year = match.group(2)
+                return f"[{doc_type.upper()} NO. {case_num} OF {case_year}]"
+                
+        return None 
 
 
     def _sentence_chunker(self, text, max_words=30):
